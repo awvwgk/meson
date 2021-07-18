@@ -18,16 +18,24 @@ import typing as T
 from . import ExtensionModule, ModuleReturnValue
 from .. import mlog
 from ..build import BuildTarget, CustomTargetIndex, Executable, GeneratedList, InvalidArguments, IncludeDirs, CustomTarget
+from ..interpreter.interpreter import TEST_KWARGS
+from ..interpreterbase import ContainerTypeInfo, InterpreterException, KwargInfo, permittedKwargs, FeatureNew, typed_kwargs, typed_pos_args, noPosargs
+from ..mesonlib import stringlistify, listify, typeslistify, File
 from ..dependencies import Dependency, ExternalLibrary
-from ..interpreter import ExecutableHolder, BuildTargetHolder, CustomTargetHolder, permitted_test_kwargs
 from ..interpreterbase import InterpreterException, permittedKwargs, FeatureNew, typed_pos_args, noPosargs
-from ..mesonlib import stringlistify, unholder, listify, typeslistify, File
+from ..mesonlib import stringlistify, listify, typeslistify, File
 
 if T.TYPE_CHECKING:
     from . import ModuleState
     from ..interpreter import Interpreter
-    from ..programs import ExternalProgram
+    from ..interpreter import kwargs as _kwargs
     from ..interpreter.interpreter import SourceOutputs
+    from ..programs import ExternalProgram
+
+    class FuncTest(_kwargs.BaseTest):
+
+        dependencies: T.List[T.Union[Dependency, ExternalLibrary]]
+        is_parallel: bool
 
 
 class RustModule(ExtensionModule):
@@ -43,9 +51,18 @@ class RustModule(ExtensionModule):
             'bindgen': self.bindgen,
         })
 
-    @permittedKwargs(permitted_test_kwargs | {'dependencies'} ^ {'protocol'})
-    @typed_pos_args('rust.test', str, BuildTargetHolder)
-    def test(self, state: 'ModuleState', args: T.Tuple[str, BuildTargetHolder], kwargs: T.Dict[str, T.Any]) -> ModuleReturnValue:
+    @typed_pos_args('rust.test', str, BuildTarget)
+    @typed_kwargs(
+        'rust.test',
+        *TEST_KWARGS,
+        KwargInfo('is_parallel', bool, default=False),
+        KwargInfo(
+            'dependencies',
+            ContainerTypeInfo(list, (Dependency, ExternalLibrary)),
+            listify=True,
+            default=[]),
+    )
+    def test(self, state: 'ModuleState', args: T.Tuple[str, BuildTarget], kwargs: 'FuncTest') -> ModuleReturnValue:
         """Generate a rust test target from a given rust target.
 
         Rust puts it's unitests inside it's main source files, unlike most
@@ -88,10 +105,10 @@ class RustModule(ExtensionModule):
         ```
         """
         name = args[0]
-        base_target: BuildTarget = unholder(args[1])
+        base_target: BuildTarget = args[1]
         if not base_target.uses_rust():
             raise InterpreterException('Second positional argument to rustmod.test() must be a rust based target')
-        extra_args = stringlistify(kwargs.get('args', []))
+        extra_args = kwargs['args']
 
         # Delete any arguments we don't want passed
         if '--test' in extra_args:
@@ -104,17 +121,17 @@ class RustModule(ExtensionModule):
             del extra_args[i + 1]
             del extra_args[i]
         for i, a in enumerate(extra_args):
-            if a.startswith('--format='):
+            if isinstance(a, str) and a.startswith('--format='):
                 del extra_args[i]
                 break
 
-        dependencies = unholder(listify(kwargs.get('dependencies', [])))
-        for d in dependencies:
-            if not isinstance(d, (Dependency, ExternalLibrary)):
-                raise InvalidArguments('dependencies must be a dependency or external library')
+        dependencies = [d for d in kwargs['dependencies']]
 
-        kwargs['args'] = extra_args + ['--test', '--format', 'pretty']
-        kwargs['protocol'] = 'rust'
+        # We need to cast here, as currently these don't have protocol in them, but test itself does.
+        tkwargs = T.cast('_kwargs.FuncTest', kwargs.copy())
+
+        tkwargs['args'] = extra_args + ['--test', '--format', 'pretty']
+        tkwargs['protocol'] = 'rust'
 
         new_target_kwargs = base_target.kwargs.copy()
         # Don't mutate the shallow copied list, instead replace it with a new
@@ -130,11 +147,10 @@ class RustModule(ExtensionModule):
             new_target_kwargs
         )
 
-        e = ExecutableHolder(new_target, self.interpreter)
         test = self.interpreter.make_test(
-            self.interpreter.current_node, [name, e], kwargs)
+            self.interpreter.current_node, (name, new_target), tkwargs)
 
-        return ModuleReturnValue(None, [e, test])
+        return ModuleReturnValue(None, [new_target, test])
 
     @noPosargs
     @permittedKwargs({'input', 'output', 'include_directories', 'c_args', 'args'})
@@ -147,7 +163,7 @@ class RustModule(ExtensionModule):
         header: 'SourceOutputs'
         _deps: T.Sequence['SourceOutputs']
         try:
-            header, *_deps = unholder(self.interpreter.source_strings_to_files(listify(kwargs['input'])))
+            header, *_deps = self.interpreter.source_strings_to_files(listify(kwargs['input']))
         except KeyError:
             raise InvalidArguments('rustmod.bindgen() `input` argument must have at least one element.')
 
@@ -158,12 +174,12 @@ class RustModule(ExtensionModule):
         if not isinstance(output, str):
             raise InvalidArguments('rustmod.bindgen() `output` argument must be a string.')
 
-        include_dirs: T.List[IncludeDirs] = typeslistify(unholder(listify(kwargs.get('include_directories', []))), IncludeDirs)
+        include_dirs: T.List[IncludeDirs] = typeslistify(listify(kwargs.get('include_directories', [])), IncludeDirs)
         c_args: T.List[str] = stringlistify(listify(kwargs.get('c_args', [])))
         bind_args: T.List[str] = stringlistify(listify(kwargs.get('args', [])))
 
         # Split File and Target dependencies to add pass to CustomTarget
-        depends: T.List[T.Union[GeneratedList, BuildTarget, CustomTargetIndex]] = []
+        depends: T.List[T.Union[GeneratedList, BuildTarget, CustomTargetIndex, CustomTarget]] = []
         depend_files: T.List[File] = []
         for d in _deps:
             if isinstance(d, File):
@@ -177,8 +193,7 @@ class RustModule(ExtensionModule):
             inc_strs.extend([f'-I{x}' for x in i.to_string_list(state.environment.get_source_dir())])
 
         if self._bindgen_bin is None:
-            # there's some bugs in the interpreter typeing.
-            self._bindgen_bin = T.cast('ExternalProgram', state.find_program('bindgen').held_object)
+            self._bindgen_bin = state.find_program('bindgen')
 
         name: str
         if isinstance(header, File):
@@ -205,7 +220,7 @@ class RustModule(ExtensionModule):
             backend=state.backend,
         )
 
-        return ModuleReturnValue([target], [CustomTargetHolder(target, self.interpreter)])
+        return ModuleReturnValue([target], [target])
 
 
 def initialize(*args: T.List, **kwargs: T.Dict) -> RustModule:

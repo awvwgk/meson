@@ -468,10 +468,9 @@ class DmdLikeCompilerMixin(CompilerMixinBase):
 
     def get_soname_args(self, env: 'Environment', prefix: str, shlib_name: str,
                         suffix: str, soversion: str,
-                        darwin_versions: T.Tuple[str, str],
-                        is_shared_module: bool) -> T.List[str]:
+                        darwin_versions: T.Tuple[str, str]) -> T.List[str]:
         sargs = super().get_soname_args(env, prefix, shlib_name, suffix,
-                                        soversion, darwin_versions, is_shared_module)
+                                        soversion, darwin_versions)
 
         # LDC and DMD actually do use a linker, but they proxy all of that with
         # their own arguments
@@ -535,7 +534,7 @@ class DCompiler(Compiler):
     def sanity_check(self, work_dir: str, environment: 'Environment') -> None:
         source_name = os.path.join(work_dir, 'sanity.d')
         output_name = os.path.join(work_dir, 'dtest')
-        with open(source_name, 'w') as ofile:
+        with open(source_name, 'w', encoding='utf-8') as ofile:
             ofile.write('''void main() { }''')
         pc = subprocess.Popen(self.exelist + self.get_output_args(output_name) + self._get_target_arch_args() + [source_name], cwd=work_dir)
         pc.wait()

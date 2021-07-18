@@ -50,6 +50,7 @@ index.md
 			Python-module.md
 			Qt4-module.md
 			Qt5-module.md
+			Qt6-module.md
 			RPM-module.md
 			Rust-module.md
 			Simd-module.md
@@ -86,6 +87,7 @@ index.md
 		Shipping-prebuilt-binaries-as-wraps.md
 		fallback-wraptool.md
 	Release-notes.md
+		Release-notes-for-0.59.0.md
 		Release-notes-for-0.58.0.md
 		Release-notes-for-0.57.0.md
 		Release-notes-for-0.56.0.md
